@@ -47,16 +47,33 @@ The python script and exe file both work the same way.  If using the python scip
 
 # Example Images
 
+***Github messes with the image scaling, output will be correct to scale***
+
+Example 1: DVD and BluRay alignment
+
+Low res DVD image:
 ![LR input](https://imgur.com/Ba6PSTH.png)
+
+High res BluRay:
 ![HR input](https://imgur.com/KaGJigN.png)
+
+DVD output:
 ![LR output](https://imgur.com/0leDQ8B.png)
+
+BluRay output:
 ![HR output](https://imgur.com/c0ljhQD.png)
 
 
-
+Rotated LR image:
 ![LR input](https://imgur.com/b3OnyKN.png)
+
+Proper HR image:
 ![HR input](https://imgur.com/4N6Bk8q.png)
+
+Usable area is cropped to make LR output:
 ![LR output](https://imgur.com/h1dr5lr.png)
+
+HR output:
 ![HR output](https://imgur.com/NMc3Rai.png)
 
 
