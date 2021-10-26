@@ -1,4 +1,4 @@
-![ImgAlign](https://imgur.com/Ru7XVb6)
+![ImgAlign](https://imgur.com/Ru7XVb6.png)
 
 # ImgAlign
 If you have training images that aren't aligned properly, you've come to the right place.  This tool is useful for auto aligning, cropping, and scaling HR and LR images for training image based neural networks.  It is a CLI that takes pairs of high and low resolution images that are misaligned, misscaled, cropped out, and rotated, and outputs new, usable images for use in training neural networks.  
