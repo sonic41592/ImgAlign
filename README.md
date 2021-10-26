@@ -1,28 +1,74 @@
 # ImgAlign
-For auto aligning, cropping, and scaling HR and LR images for training image based neural networks
+If you have training images that aren't aligned properly, you've come to the right place.  This tool is useful for auto aligning, cropping, and scaling HR and LR images for training image based neural networks.  It is a CLI that takes pairs of high and low resolution images that are misaligned, misscaled, cropped out, and rotated, and outputs new, usable images for use in training neural networks.  
+
+
+# Quick Start
+Accepts file inputs or directories.  Add the ImgAlign.exe file to path or open a CMD prompt in the folder it is in.  Have a folder named HR and another named LR which contain the HR and LR images with matching names.  Use the options -s (or --scale) to set the scaling multiple, and -m (or --mode) to set retention mode.  Output images are saved in Output folder and are scaled properly. 
+
+Example:
+
+ImgAlign -s 2 -m 0
+
+Example 2 with all options enabled with default vaules:
+
+ImgAlign -s 2 -m 0 -g HR\ -l LR\ -c -t 15 -r -o
+
 
 # Usage
-Make sure OpenCV is installed, 'pip install opencv-python' (OpenCV not yet working on python 3.10).
+The python script and exe file both work the same way.  If using the python scipt, make sure OpenCV and Pillow are installed installed using the line 'pip install opencv-python Pillow' (OpenCV not yet working on python 3.10).  It is suggested to add the exe file to path in Windows and used as a typical CLI.
 
-For now, the options are: mode (0 or 1), HR file name, LR file name, and scale (integer) in that other: ImgAlign.py mode HR LR scale
 
-Example: 
+***All options are now fully functional:***
 
-ImgAlign.py 0 HR.png LR.png 2
+-s SCALE, --scale SCALE                   Positive integer value. How many times bigger you want the HR resolution to be from the LR
+                                          resolution.
 
-This is still very much a work in progress. I have fairly limited coding knowledge, but am always trying to pick up new things.
+-m MODE, --mode MODE                      Options: 0 or 1. Mode 0 manipulates the HR images while remaining true to the LR images aside
+                                          from cropping. Mode 1 manipulates the LR images and remains true to the HR images aside from
+                                          cropping.
 
-I'd like to add batch functionality so that it will automatically process each picture with matching names in HR and LR directories. I also need to make the argument input nicer.
+-c, --autocrop                            Disabled by default. If enabled, this auto crops black boarders around HR and LR images.
 
-This cannot handle rotations at the moment, but I am going to try to add that feature soon.
+-t THRESHOLD, --threshold THRESHOLD       Integer 0-255, default 15. Luminance threshold for autocropping. Higher values cause more
+                                          agressive cropping. Only works when autocrop is enabled.
 
-ImgAlign can scale height and width independently, but being more similar tends to give better results. For instance, DVD images are stored at 720x480 resolution, but are almost always displayed at 720x540 or 640x480 (Also known as anamorphic, where SAR≠PAR). To match that with a 1920x1080 image (SAR=PAR), you'd get better results prescaling the the LR image (or HR image) to the intended 720x540 or 640x480 (1920x1280, 1620x1080, 1440x960, etc. for HR) than leaving it at 720x480, although either way works. 
+-r, --rotate                              Disabled by default. If enabled, this allows rotations when aligning images.
 
-Mode 0 is true to the LR file, meaning it maintains the resolution, aspect ratio, and orientation of the LR image, cropping where needed. The HR image is cropped, scaled, and translated accordingly.
+-g HR, --hr HR                            HR File or folder directory. No need to use if they are in HR folder in current working
+                                          directory.
+                                          
+-l LR, --lr LR                            LR File or folder directory. No need to use if they are in LR folder in current working
+                                          directory.
+                                          
+-o, --overlay                             Disabled by default. After saving aligned images, this option will create a separate 50:50
+                                          merge of the aligned images in the Overlay folder. Useful for quickly checking through image
+                                          sets for poorly aligned outputs
 
-Mode 1 is true to the HR image, maintaining its resolution, orientaion, and aspect ratio.  The LR image is cropped, scaled, translated to match.  **I have not added a boundary check for this mode yet, so the HR image should be fully contained within the LR image, or else black bars will likely be added.  I also haven't yet added a check to make sure the HR resolution is evenly divisible by scale, so be sure it is before using** This mode only outputs a new LR image because, as stated, the HR should be contained in the other image, so no cropping is needed.
+
+# Example Images
+
+![LR input](https://imgur.com/Ba6PSTH.png)
+![HR input](https://imgur.com/KaGJigN.png)
+![LR output](https://imgur.com/0leDQ8B.png)
+![HR output](https://imgur.com/c0ljhQD.png)
+
+
+
+![LR input](https://imgur.com/b3OnyKN.png)
+![HR input](https://imgur.com/4N6Bk8q.png)
+![LR output](https://imgur.com/h1dr5lr.png)
+![HR output](https://imgur.com/NMc3Rai.png)
+
+
 
 # Starting Point/Credit
 
 I used lines of code from this site to get started with basic alignment:
 https://learnopencv.com/feature-based-image-alignment-using-opencv-c-python/
+
+Autocrop code:
+https://stackoverflow.com/questions/13538748/crop-black-edges-with-opencv
+
+Algorithm to find the largest rectangle contained in a rotated rectangle:
+https://stackoverflow.com/questions/16702966/rotate-image-and-crop-out-black-borders
+
