@@ -5,7 +5,7 @@ If you have training images that aren't aligned properly, you've come to the rig
 
 
 # Quick Start
-Accepts file inputs or directories.  Add the ImgAlign.exe file to path or open a CMD prompt in the folder it is in.  Have a folder named HR and another named LR which contain the HR and LR images with matching names.  Use the options -s (or --scale) to set the scaling multiple, and -m (or --mode) to set retention mode.  Output images are saved in Output folder and are scaled properly. 
+Accepts file inputs or directories.  Add the ImgAlign.exe file to path or open a CMD prompt in the folder it is in.  Have a folder named HR and another named LR which contain the HR and LR images with matching names.  Use the options -s (or --scale) to set the scaling multiple, and -m (or --mode) to set retention mode.  Output images are saved in Output folder and are scaled properly. It is recommended to only use rotations or homography if they are needed because it may give worse results on image pairs that are aren't rotated or have warped homography.
 
 Example:
 
@@ -13,7 +13,7 @@ ImgAlign -s 2 -m 0
 
 Example 2 with all options enabled with default vaules:
 
-ImgAlign -s 2 -m 0 -g HR\ -l LR\ -c -t 15 -r -o
+ImgAlign -s 2 -m 0 -g HR\ -l LR\ -c -t 15 -r -o -f
 
 
 # Options:
@@ -45,6 +45,8 @@ The python script and exe file both work the same way.  If using the python scip
 -o, --overlay:                             Disabled by default. After saving aligned images, this option will create a separate 50:50
                                           merge of the aligned images in the Overlay folder. Useful for quickly checking through image
                                           sets for poorly aligned outputs
+
+-f, --full:                                Disabled by default.  If enabled, this allows full homography mapping of the image, correcting rotations, translations, and warping.
 
 
 # Example Images
