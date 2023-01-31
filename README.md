@@ -22,32 +22,54 @@ The python script and exe file both work the same way.  If using the python scip
 
 ***All options are now fully functional:***
 
--s SCALE, --scale SCALE:                   Positive integer value. How many times bigger you want the HR resolution to be from the LR
+-s SCALE, --scale SCALE:                  Positive integer value. How many times bigger you want the HR resolution to be from the LR
                                           resolution.
 
--m MODE, --mode MODE:                      Options: 0 or 1. Mode 0 manipulates the HR images while remaining true to the LR images aside
+-m MODE, --mode MODE:                     Options: 0 or 1. Mode 0 manipulates the HR images while remaining true to the LR images aside
                                           from cropping. Mode 1 manipulates the LR images and remains true to the HR images aside from
                                           cropping.
 
--c, --autocrop:                            Disabled by default. If enabled, this auto crops black boarders around HR and LR images.
+-c, --autocrop:                           Disabled by default. If enabled, this auto crops black boarders around HR and LR images.
 
--t THRESHOLD, --threshold THRESHOLD:       Integer 0-255, default 15. Luminance threshold for autocropping. Higher values cause more
+-t THRESHOLD, --threshold THRESHOLD:      Integer 0-255, default 15. Luminance threshold for autocropping. Higher values cause more
                                           agressive cropping. Only works when autocrop is enabled.
 
--r, --rotate:                              Disabled by default. If enabled, this allows rotations when aligning images.
+-r, --rotate:                             Disabled by default. If enabled, this allows rotations when aligning images.
 
--g HR, --hr HR:                            HR File or folder directory. No need to use if they are in HR folder in current working
+-g HR, --hr HR:                           HR File or folder directory. No need to use if they are in HR folder in current working
                                           directory.
                                           
--l LR, --lr LR:                            LR File or folder directory. No need to use if they are in LR folder in current working
+-l LR, --lr LR:                           LR File or folder directory. No need to use if they are in LR folder in current working
                                           directory.
                                           
--o, --overlay:                             Disabled by default. After saving aligned images, this option will create a separate 50:50
+-o, --overlay:                            Enabled by default. After saving aligned images, this option will create a separate 50:50
                                           merge of the aligned images in the Overlay folder. Useful for quickly checking through image
                                           sets for poorly aligned outputs
 
--f, --full:                                Disabled by default.  If enabled, this allows full homography mapping of the image, correcting rotations, translations, and warping.
+-f, --full:                               Disabled by default.  If enabled, this allows full homography mapping of the image, correcting rotations, translations, and 
+                                          warping.
 
+-e, --score:                              Disabled by default.  Calculate an alignment score for each processed pair of images
+
+-w, --warp:                               Disabled by default.  Match images using Thin Plate Splines, allowing full image warping
+
+-n, --threads:                            Default 1.  Number of threads to use for automatic matching.  Large images require a lot of RAM, so start small to test
+                                          first.
+
+-u, --manual:                             Disabled by default.  Manual mode.  If enabled, this opens windows for working pairs of images to be aligned.  Double click
+                                          pairs of matching points on each image in sequence, and close the windows when finished.
+                                          
+                                          Manual Keys: 
+                                          Double click left: Select point.
+                                          Click and Drag left: Pan image.
+                                          Scroll Wheel: Zoom in and out.
+                                          Double Click right: Reset image view.
+                                          u: Undo last point selection.
+                                          w: Close both windows to progress.
+                                          p: Preview alignment.  Overlays images using current alignment points.
+
+
+If using python, matplotlib 3.5.1 works best, every other version causes one of the window's cursor to change after previewing an image
 
 # Example Images
 
