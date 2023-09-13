@@ -1,12 +1,19 @@
+from mpl_interactions import zoom_factory, panhandler
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+import numpy as np
 import os
 import sys
 import cv2
 import glob
-import numpy as np
 import argparse
 import math
 from scipy import ndimage
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from sklearn.linear_model import RANSACRegressor
+from python_color_transfer.color_transfer import ColorTransfer
+PT = ColorTransfer()
+
 
 parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
 parser.add_argument("-s", "--scale", help="Positive integer value.  How many times bigger you want the HR resolution to be from the LR\nresolution.", required=True)
@@ -18,11 +25,12 @@ parser.add_argument("-r", "--rotate", action='store_true', default=False, help="
 parser.add_argument("-g", "--hr", default='', help="HR File or folder directory.  No need to use if they are in HR folder in current working\ndirectory.")
 parser.add_argument("-l", "--lr", default='', help="LR File or folder directory.  No need to use if they are in LR folder in current working\ndirectory.")
 parser.add_argument("-o", "--overlay", action='store_false', default=True, help="Enabled by default.  After saving aligned images, this option will create a separate 50:50\nmerge of the aligned images in the Overlay folder. Useful for quickly checking through image\nsets for poorly aligned outputs")
+parser.add_argument("-i", "--color", default=0, help="Default 0.  Choose which color to use for color correction.  -1 uses LR color and 1 uses HR color")
 parser.add_argument("-f", "--full", action='store_true', default=False, help="Disabled by default.  If enabled, this allows full homography mapping of the image, correcting\nrotations, translations, and warping.")
 parser.add_argument("-e", "--score", action='store_true', default=False, help="Disabled by default.  Calculate an alignment score for each processed pair of images")
 parser.add_argument("-w", "--warp", action='store_true', default=False, help="Disabled by default.  Match images using Thin Plate Splines, allowing full image warping")
-parser.add_argument("-u", "--manual", action='store_true', default=False, help="Disabled by default.  Manual mode.  If enabled, this opens windows for working pairs of images\nto be aligned.  Double click pairs of matching points on each image in sequence, and close the\nwindows when finished.\n\nManual Keys: \nDouble click left: Select point.\nClick and Drag left: Pan image.\nScroll Wheel: Zoom in and out.\nDouble Click right: Reset image view.\nu: Undo last point selection.\nw: Close both windows to progress.\np: Preview alignment.  Overlays images using current alignment points.")
-
+parser.add_argument("-a", "--semiauto", action='store_true', default=False, help="Disabled by default.  Semiautomatic mode.  Automatically find matching points, but load into a\nviewer window to manually delete or add more.")
+parser.add_argument("-u", "--manual", action='store_true', default=False, help="Disabled by default.  Manual mode.  If enabled, this opens windows for working pairs of images\nto be aligned.  Double click pairs of matching points on each image in sequence, and close the\nwindows when finished.\n\nManual Keys: \nDouble click left: Select point.\nClick and Drag left: Pan image.\nClick Scroll Wheel: Delete matching pairs of points.\nScroll Wheel: Zoom in and out.\nDouble Click right: Reset image view.\nu: Undo last point selection.\nw: Close all windows to progress.\np: Preview alignment.  Overlays images using current alignment points.")
 
 args = vars(parser.parse_args())
 
@@ -38,28 +46,23 @@ Overlay = args["overlay"]
 Homography = args["full"]
 Manual = args["manual"]
 score = args["score"]
+semiauto = args["semiauto"]
 warp = args["warp"]
+color_correction = int(args["color"])
 
-if warp or score:
-  from sklearn.linear_model import RANSACRegressor
-
+# Changing conflicting or priority setting
 if warp:
   Homography = False
-  Manual = True
+  if not Manual:
+    semiauto = True
   
-if Manual:
-  import matplotlib.pyplot as plt
-  import matplotlib as mpl
-  from mpl_interactions import zoom_factory, panhandler
+if Manual or semiauto:
   threads = 1
 
 MAX_FEATURES = 500
 
 def AutoCrop(image):
-    """Crops any edges below or equal to threshold
-    Crops blank image to 1x1.
-    Returns cropped image.
-    """
+
     threshold = lumthresh
     if len(image.shape) == 3:
         flatImage = np.max(image, 2)
@@ -109,7 +112,7 @@ def WarpImage_TPS(source, target, img, interp):
   return new_img
 
 # Make and manipulate plots for manual point selection 
-def manual_points(img1, img2):
+def manual_points(img1, img2, pointsA = None, pointsB = None):
   global pnts1, pnts2, markers1, markers2, active
   
   pnts1 = np.array([])
@@ -119,8 +122,27 @@ def manual_points(img1, img2):
   markers1 = []
   markers2 = []
   active = []
+  characters=['o', 'v','^','<','>','1','2','3','4','s','p','P','*','+','x','X','D','d']
+  if pointsA is not None:
+    pointsA, pointsB = pointsA.reshape(-1,2), pointsB.reshape(-1,2)
+    for row in pointsA:
+      pnts1 = np.concatenate((pnts1,row.reshape(1,2)))
+    for row in pointsB:
+      pnts2 = np.concatenate((pnts2,row.reshape(1,2)))
   
   # Matplotlib UI functions
+  def tnuoc(mnum1, acnum):
+    global active
+    numA = 0
+    count = 0
+    for idx in range(len(active)-1,-1,-1):
+      if active[idx] == acnum:
+        count += 1
+      if count == mnum1:
+        ele = idx
+        break
+    return ele
+    
   def onclick(event, graph):
     
     if event.dblclick and str(event.button) == 'MouseButton.LEFT':
@@ -131,21 +153,46 @@ def manual_points(img1, img2):
         if graph == 1:
           active.append(1)
           pnts1 = np.concatenate((pnts1,np.array([[ix,iy]])))
-          marker = plt.scatter(event.xdata, event.ydata, color=plt.cm.get_cmap('hsv',100)(int(len(markers1)/2*24)%100), s=100)
+          marker = plt.plot(event.xdata, event.ydata, characters[len(markers1)%18], color=mpl.colormaps.get_cmap('hsv')((len(markers1)*25)%256), picker = 5)
           markers1.append(marker)
           plt.draw()
           print(f'x1 = {ix}, y1 = {iy}')
         if graph == 2:
           active.append(2)
           pnts2 = np.concatenate((pnts2,np.array([[ix,iy]])))
-          marker = plt.scatter(event.xdata, event.ydata, color=plt.cm.get_cmap('hsv',100)(int(len(markers2)/2*24)%100), s=100)
+          marker = plt.plot(event.xdata, event.ydata, characters[len(markers2)%18], color=mpl.colormaps.get_cmap('hsv')((len(markers2)*25)%256), picker = 5)
           markers2.append(marker)
           plt.draw()
           print(f'x2 = {ix}, y2 = {iy}')
     if event.dblclick and str(event.button) == 'MouseButton.RIGHT':
       plt.autoscale(enable=True, axis='both', tight=None)
       plt.draw()
-      
+
+        
+  def onpick(event, graph):
+    global pnts1, pnts2, markers1, markers2, active
+    if str(event.mouseevent.button) == 'MouseButton.MIDDLE':
+      pairpoints = event.artist
+      rowel = (pairpoints.get_xdata()[0], pairpoints.get_ydata()[0])
+      if graph == 1:
+        rownum = np.where(np.all(pnts1 == rowel, axis = 1))[0][0]
+      else:
+        rownum = np.where(np.all(pnts2 == rowel, axis = 1))[0][0]
+      if len(pnts1) >= rownum + 1 and len(pnts2) >= rownum + 1:
+        pnts1 = np.delete(pnts1, rownum, axis = 0)
+        pnts2 = np.delete(pnts2, rownum, axis = 0)      
+        if len(markers1) - rownum <= active.count(1):
+          m1row = len(markers1) - rownum
+          m2row = len(markers2) - rownum
+          A1 = tnuoc(m1row, 1)
+          active.pop(A1)
+          A2 = tnuoc(m2row, 2)
+          active.pop(A2)
+        markers1.pop(rownum)[0].remove()
+        markers2.pop(rownum)[0].remove()        
+        fig1.canvas.draw()
+        fig2.canvas.draw()
+    
   def on_key_press(event):
     global pnts1, pnts2, markers1, markers2, active
     
@@ -155,12 +202,12 @@ def manual_points(img1, img2):
         if active[-1] == 1:
           lastact = active.pop()
           last_marker = markers1.pop()
-          last_marker.remove()
+          last_marker[0].remove()
           pnts1 = pnts1[:-1]
         else:
           lastact = active.pop()
           last_marker = markers2.pop()
-          last_marker.remove()
+          last_marker[0].remove()
           pnts2 = pnts2[:-1]
         fig1.canvas.draw()
         fig2.canvas.draw()
@@ -208,10 +255,13 @@ def manual_points(img1, img2):
         plt.axis('off')
         plt.tight_layout()
         plt.show()
+      else:
+        print('At least 4 points must be selected and the same number of points must be on each image.')
   
   # Generate the plots and link functions and controls
   preview = img2[:]
-  while len(pnts1) < 4 or (len(pnts1) != len(pnts2)):
+  repeat = 0
+  while len(pnts1) < 4 or (len(pnts1) != len(pnts2)) or repeat == 0:
     with plt.ioff():
       fig1, ax1 = plt.subplots()
     fig1.subplots_adjust(left=0,bottom=0,right=1,top=1)
@@ -224,10 +274,11 @@ def manual_points(img1, img2):
       markers1 = []
       i = 0
       for redo in pnts1:
-        markers1.append(plt.scatter(redo[0], redo[1], color=plt.cm.get_cmap('hsv',100)(int(i/2*24)%100), s=100))
+        markers1.append(plt.plot(redo[0], redo[1], characters[i%18], color=mpl.colormaps.get_cmap('hsv')((i*25)%256), picker = 5))
         i += 1
-
+    fig1.canvas.mpl_disconnect(fig1.canvas.manager.key_press_handler_id)
     cid = fig1.canvas.mpl_connect('button_press_event', lambda event: onclick(event, 1) if event.dblclick else None)
+    cid_pick = fig1.canvas.mpl_connect('pick_event', lambda event: onpick(event,1))
     cid_key = fig1.canvas.mpl_connect('key_press_event', on_key_press)
 
     plt.axis('off')
@@ -245,10 +296,11 @@ def manual_points(img1, img2):
       markers2 = []
       i = 0
       for redo in pnts2:
-        markers2.append(plt.scatter(redo[0], redo[1], color=plt.cm.get_cmap('hsv',100)(int(i/2*24)%100), s=100))
+        markers2.append(plt.plot(redo[0], redo[1], characters[i%18], color=mpl.colormaps.get_cmap('hsv')((i*25)%256), picker = 5))
         i += 1
-
+    fig2.canvas.mpl_disconnect(fig2.canvas.manager.key_press_handler_id)
     cid = fig2.canvas.mpl_connect('button_press_event', lambda event: onclick(event, 2) if event.dblclick else None)
+    cid_pick = fig2.canvas.mpl_connect('pick_event', lambda event: onpick(event,2))
     cid_key = fig2.canvas.mpl_connect('key_press_event', on_key_press)
     plt.axis('off')
     plt.tight_layout()
@@ -256,6 +308,7 @@ def manual_points(img1, img2):
     
     if len(pnts1) < 4 or (len(pnts1) != len(pnts2)):
       print('At least 4 points must be selected and the same number of points must be on each image.')
+    repeat = 1
   return pnts1, pnts2
 
 # Automatic point finding with SIFT
@@ -357,6 +410,13 @@ def Align_Process(im1, im2):
     points1, points2 = manual_points(im1, im2)
   else:
     points1, points2 = auto_points(im1, im2)
+    if semiauto:
+      points1, points2 = ransac(points1, points2)
+      _, ind1 = np.unique(points1, axis=0, return_index=True)
+      _, ind2 = np.unique(points2, axis=0, return_index=True)
+      remrows = np.intersect1d(ind1, ind2)
+      points1, points2 = points1[remrows], points2[remrows]
+      points1, points2 = manual_points(im1, im2, points1, points2)
   
   # Find transform based on points
   if Homography:
@@ -441,6 +501,11 @@ def Do_Work(hrimg, lrimg, base = None):
   
   if mode == 1:
     lowres, highres = Align_Process(lowres, highres)
+  
+  if color_correction == -1:
+    highres = PT.pdf_transfer(img_arr_in = highres, img_arr_ref = lowres, regrain = True)
+  elif color_correction == 1:
+    lowres = PT.pdf_transfer(img_arr_in = lowres, img_arr_ref = highres, regrain = True)
   
   cv2.imwrite('Output/HR/{:s}.png'.format(base), highres)
   cv2.imwrite('Output/LR/{:s}.png'.format(base), lowres)
