@@ -11,9 +11,9 @@ Example:
 
 ImgAlign -s 2 -m 0
 
-Example 2 with all options enabled with default vaules:
+Example 2 with some settings enabled with default vaules:
 
-ImgAlign -s 2 -m 0 -g HR\ -l LR\ -c -t 15 -r -o -f
+ImgAlign -s 2 -m 0 -g HR\ -l LR\ -c -f -a -i -1 
 
 
 # Options:
@@ -31,7 +31,7 @@ The python script and exe file both work the same way.  If using the python scip
 
 -c, --autocrop:                           Disabled by default. If enabled, this auto crops black boarders around HR and LR images.
 
--t THRESHOLD, --threshold THRESHOLD:      Integer 0-255, default 15. Luminance threshold for autocropping. Higher values cause more
+-t THRESHOLD, --threshold THRESHOLD:      Integer 0-255, default 50. Luminance threshold for autocropping. Higher values cause more
                                           agressive cropping. Only works when autocrop is enabled.
 
 -r, --rotate:                             Disabled by default. If enabled, this allows rotations when aligning images.
@@ -46,12 +46,17 @@ The python script and exe file both work the same way.  If using the python scip
                                           merge of the aligned images in the Overlay folder. Useful for quickly checking through image
                                           sets for poorly aligned outputs
 
+-i COLOR, --color COLOR:                  Default 0.  Choose which color to use for color correction.  -1 uses LR color and 1 uses HR color
+
 -f, --full:                               Disabled by default.  If enabled, this allows full homography mapping of the image, correcting rotations, translations, and 
                                           warping.
 
 -e, --score:                              Disabled by default.  Calculate an alignment score for each processed pair of images
 
 -w, --warp:                               Disabled by default.  Match images using Thin Plate Splines, allowing full image warping
+
+-a, --semiauto                            Disabled by default.  Semiautomatic mode.  Automatically find matching points, but load into a
+                                          viewer window to manually delete or add more.
 
 -n, --threads:                            Default 1.  Number of threads to use for automatic matching.  Large images require a lot of RAM, so start small to test
                                           first.
