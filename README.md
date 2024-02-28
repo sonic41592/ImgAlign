@@ -22,8 +22,8 @@ ImgAlign -s 2 -m 0 -g HR\ -l LR\ -c -i -1 -j -ai
 
 # Options:
 <pre>
-usage: ImgAlign [-h] -s SCALE [-m MODE] [-l LR] [-g HR] [-c] [-t THRESHOLD] [-j] [-r] [-f] [-w] [-ai] [-q QUALITY]
-                [-u] [-a] [-o] [-i COLOR] [-n THREADS] [-e]
+usage: ImgAlign.exe [-h] -s SCALE [-m MODE] [-l LR] [-g HR] [-o OUTPUT] [-c] [-t THRESHOLD] [-j] [-r] [-f] [-w] [-ai]
+                    [-q QUALITY] [-aq] [-u] [-a] [-O] [-i COLOR] [-n THREADS] [-e]
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -40,6 +40,9 @@ optional arguments:
   -g HR, --hr HR        HR File or folder directory. Use this to specify your high resolution image file or folder of
                         images. By default, ImgAlign will use images in the HR folder in the current working
                         directory.
+  -o OUTPUT, --output OUTPUT
+                        Output folder directory. Defaults to current terminal directory. Use this to specify where
+                        your Output folder will be saved.
   -c, --autocrop        Disabled by default. If enabled, this auto crops black boarders around HR and LR images.
                         Manually cropping images before running through ImgAlign will usually yield more consistent
                         results so that dark frames aren't overcropped
@@ -59,16 +62,19 @@ optional arguments:
                         depending on the type of low resolution images being used, this can usually be fixed by
                         lowering the quality parameter to 2 or 1.
   -q QUALITY, --quality QUALITY
-                        Integer 1-3, Default 3. Quality of the AI alignment. Higher numbers are more aggressive and
-                        ususally improves alignment, but can cause AI artifacts on some sources. Lower numbers might
-                        impact alignment, but causes fewer AI artifacts, uses less VRAM, runs a little faster, and is
-                        more suitable for multithreading.
+                        Integer 1-3, Default 3. Quality of the AI alignment. This also functions as a maximum quality
+                        used when auto quality is enabled. Higher numbers are more aggressive and ususally improves
+                        alignment, but can cause AI artifacts on some sources. Lower numbers might impact alignment,
+                        but causes fewer AI artifacts, uses less VRAM, runs a little faster, and is more suitable for
+                        multithreading.
+  -aq, --autoquality    Enabled by default. Using this option disables the auto quality step down to try to fix AI
+                        artifacts.
   -u, --manual          Disabled by default. Manual mode. If enabled, this opens windows for working pairs of images
                         to be aligned. Double click pairs of matching points on each image in sequence, and close the
                         windows when finished.
   -a, --semiauto        Disabled by default. Semiautomatic mode. Automatically finds matching points, but loads them
                         into a viewer window to manually delete or add more.
-  -o, --overlay         Enabled by default. After saving aligned images, this option will create a separate 50:50
+  -O, --overlay         Enabled by default. After saving aligned images, this option will create a separate 50:50
                         merge of the aligned images in the Overlay folder. Useful for quickly checking through image
                         sets for poorly aligned outputs.
   -i COLOR, --color COLOR
@@ -85,8 +91,8 @@ optional arguments:
 Manual Keys:
 Double click left: Select point.
 Click and Drag left: Pan image.
-Click Scroll Wheel: Delete matching pairs of points.
 Scroll Wheel: Zoom in and out.
+Click Scroll Wheel: Delete matching pairs of points.
 Double Click right: Reset image view.
 Spacebar: Toggle edge detection view
 u: Undo last point selection.
@@ -112,7 +118,7 @@ ImgAlign -s 4 -ai -f -c
 
 [4x With full homography and Raft](https://imgsli.com/MjQwNzM3)
 
-ImgAlign -s 2 -ai -r -q 2
+ImgAlign -s 2 -ai -r -q 1
 
 [2x with rotations and Raft quality 2](https://imgsli.com/MjQwNzM4)
 

@@ -37,6 +37,7 @@ parser.add_argument("-s", "--scale", help="Positive integer value. How many time
 parser.add_argument("-m", "--mode", default=0, help="Options: 0 or 1. Mode 0 manipulates the HR images while remaining true to the LR images aside from cropping. Mode 1 manipulates the LR images and remains true to the HR images aside from cropping. In almost every case, you will want to use mode 0 so as not to alter the degradations on the LR images.")
 parser.add_argument("-l", "--lr", default='', help="LR File or folder directory. Use this to specify your low resolution image file or folder of images. By default, ImgAlign will use images in the LR folder in the current working directory.")
 parser.add_argument("-g", "--hr", default='', help="HR File or folder directory. Use this to specify your high resolution image file or folder of images. By default, ImgAlign will use images in the HR folder in the current working directory.")
+parser.add_argument("-o", "--output", default='', help="Output folder directory. Defaults to current terminal directory. Use this to specify where your Output folder will be saved.")
 parser.add_argument("-c", "--autocrop", action='store_true', default=False, help="Disabled by default. If enabled, this auto crops black boarders around HR and LR images. Manually cropping images before running through ImgAlign will usually yield more consistent results so that dark frames aren't overcropped")
 parser.add_argument("-t", "--threshold", default=50, help="Integer 0-255, default 50. Luminance threshold for autocropping. Higher values cause more agressive cropping.")
 parser.add_argument("-j", "--affine", action='store_true', default=False, help="Basic affine alignment. Used as default if no other option is specified")
@@ -44,10 +45,11 @@ parser.add_argument("-r", "--rotate", action='store_true', default=False, help="
 parser.add_argument("-f", "--full", action='store_true', default=False, help="Disabled by default. If enabled, this allows full homography mapping of the image, correcting rotations, translations, and perspecive warping.")
 parser.add_argument("-w", "--warp", action='store_true', default=False, help="Disabled by default. Match images using Thin Plate Splines, allowing full image warping. Because of the nature of TPS warping, this option requires that manual or semiautomatic points are used.")
 parser.add_argument("-ai", "--ai", action='store_true', default=False, help="Disabled by default. This option allows use of RAFT optical flow to align images. This can be used in conjunction with any of the aligning methods, affine, rotation, homography, or warping to improve alignment, or by itself. This method can occasionally cause artifacts in the output depending on the type of low resolution images being used, this can usually be fixed by lowering the quality parameter to 2 or 1.")
-parser.add_argument("-q", "--quality", default=3, help="Integer 1-3, Default 3. Quality of the AI alignment. Higher numbers are more aggressive and ususally improves alignment, but can cause AI artifacts on some sources. Lower numbers might impact alignment, but causes fewer AI artifacts, uses less VRAM, runs a little faster, and is more suitable for multithreading.")
+parser.add_argument("-q", "--quality", default=3, help="Integer 1-3, Default 3. Quality of the AI alignment. This also functions as a maximum quality used when auto quality is enabled. Higher numbers are more aggressive and ususally improves alignment, but can cause AI artifacts on some sources. Lower numbers might impact alignment, but causes fewer AI artifacts, uses less VRAM, runs a little faster, and is more suitable for multithreading.")
+parser.add_argument("-aq", "--autoquality", action='store_false', default=True, help="Enabled by default. Using this option disables the auto quality step down to try to fix AI artifacts.")
 parser.add_argument("-u", "--manual", action='store_true', default=False, help="Disabled by default. Manual mode. If enabled, this opens windows for working pairs of images to be aligned. Double click pairs of matching points on each image in sequence, and close the windows when finished.")
 parser.add_argument("-a", "--semiauto", action='store_true', default=False, help="Disabled by default. Semiautomatic mode. Automatically finds matching points, but loads them into a viewer window to manually delete or add more.")
-parser.add_argument("-o", "--overlay", action='store_false', default=True, help="Enabled by default. After saving aligned images, this option will create a separate 50:50 merge of the aligned images in the Overlay folder. Useful for quickly checking through image sets for poorly aligned outputs.")
+parser.add_argument("-O", "--overlay", action='store_false', default=True, help="Enabled by default. After saving aligned images, this option will create a separate 50:50 merge of the aligned images in the Overlay folder. Useful for quickly checking through image sets for poorly aligned outputs.")
 parser.add_argument("-i", "--color", default=0, help="Default disabled. After alignment, option -1 changes the colors of the HR image to match those of the LR image. Option 1 changes the color of the LR images to match the HR images. This can occasionally cause miscolored regions in the altered images, so examine the results carefully.")
 parser.add_argument("-n", "--threads", default=1, help="Default 1. Number of threads to use for automatic matching. Large images require a lot of RAM, so start small to test first.")
 parser.add_argument("-e", "--score", action='store_true', default=False, help="Disabled by default. Calculate an alignment score for each processed pair of images. These scores should be taken with a grain of salt, they are mainly to give a general idea of how well aligned things are.")
@@ -63,6 +65,7 @@ rotate = args["rotate"]
 affi = args["affine"]
 HRfolder = args["hr"]
 LRfolder = args["lr"]
+outfolder = args["output"]
 Overlay = args["overlay"]
 Homography = args["full"]
 Manual = args["manual"]
@@ -71,22 +74,19 @@ semiauto = args["semiauto"]
 warp = args["warp"]
 color_correction = int(args["color"])
 optical_flow = args["ai"]
-quality = args["quality"]
+quality = int(args["quality"])
+auto_quality = args["autoquality"]
 
 # Changing conflicting or priority setting
 if optical_flow:
-    if quality == 3:
-        Qh, Qw, gauss = 1080, 1440, (5,5)
-    elif quality == 2:
-        Qh, Qw, gauss = 720, 960, (3,3)
-    else:
-        Qh, Qw, gauss = 544, 720, (1,1)
+    Qh = (544, 720, 1080)
+    Qw = (720, 960, 1440)
+    gauss = ((1,1), (3,3), (5,5))
     if torch.cuda.is_available():
         DEVICE = 'cuda'
     else:
         DEVICE = 'cpu'
     def load_image(imfile):
-        imfile = cv2.GaussianBlur(imfile,gauss, 0)
         img = np.array(imfile).astype(np.uint8)
         img = torch.from_numpy(img).permute(2, 0, 1).float()
         return img[None].to(DEVICE)
@@ -110,6 +110,9 @@ if Manual or semiauto:
 
 if Manual or semiauto:
     threads = 1
+
+if outfolder:
+    outfolder = outfolder + '/'
 
 MAX_FEATURES = 500
 
@@ -492,6 +495,20 @@ def find_rectangle(arr):
     
     return np.array([rows[0], cols[0]]), np.array([rows[1], cols[1]])
 
+def find_map(aim1, aim2, qual):
+    aim1r = cv2.resize(aim1,(Qw[qual-1],Qh[qual-1]),cv2.INTER_CUBIC)
+    aim2r = cv2.resize(aim2,(Qw[qual-1],Qh[qual-1]),cv2.INTER_CUBIC)
+    aim1g=cv2.cvtColor(cv2.cvtColor(aim1r,cv2.COLOR_BGR2GRAY),cv2.COLOR_GRAY2BGR)
+    aim2g=cv2.cvtColor(cv2.cvtColor(aim2r,cv2.COLOR_BGR2GRAY),cv2.COLOR_GRAY2BGR)
+    aim1g = cv2.GaussianBlur(aim1g, gauss[qual-1], 0)
+    aim2g = cv2.GaussianBlur(aim2g, gauss[qual-1], 0)
+    with torch.no_grad():
+        image1 = load_image(aim1g)
+        image2 = load_image(aim2g)
+        flow_low, flow_up = model(image1, image2, iters=20, test_mode=True)
+        displacement = flow_up[0].permute(1,2,0).detach().cpu().numpy()
+        return displacement
+
 # Improves alignment using RAFT
 def AI_Align_Process(aim1, aim2, pre = 0):
     # Precrops the images to overlapping regions if they aren't prealigned
@@ -521,31 +538,45 @@ def AI_Align_Process(aim1, aim2, pre = 0):
     # RAFT mapping
     aim1y, aim1x, _ = aim1.shape
     aim2y, aim2x, _ = aim2.shape
+    q = quality
     if mode == 1:
         aim2 = aim2[:aim2y-int((aim2y%ogscale)),:aim2x-int((aim2x%ogscale)),:]
-    aim1r = cv2.resize(aim1,(Qw,Qh),cv2.INTER_CUBIC)
-    aim2r = cv2.resize(aim2,(Qw,Qh),cv2.INTER_CUBIC)
-    aim1g=cv2.cvtColor(cv2.cvtColor(aim1r,cv2.COLOR_BGR2GRAY),cv2.COLOR_GRAY2BGR)
-    aim2g=cv2.cvtColor(cv2.cvtColor(aim2r,cv2.COLOR_BGR2GRAY),cv2.COLOR_GRAY2BGR)
-    with torch.no_grad():
-        image1 = load_image(aim1g)
-        image2 = load_image(aim2g)
-        flow_low, flow_up = model(image1, image2, iters=20, test_mode=True)
-        displacement = flow_up[0].permute(1,2,0).detach().cpu().numpy()
-    grid_array = np.indices((Qh,Qw),dtype='float').transpose(1,2,0)
+    displacement = find_map(aim1, aim2, q)
+    magnitude = np.sqrt(displacement[:,:,0]**2+displacement[:,:,1]**2)
+    gradienty = np.gradient(magnitude,axis=0)
+    gradientx = np.gradient(magnitude,axis=1)
+    grangex = gradientx.max() - gradientx.min()
+    grangey = gradienty.max() - gradienty.min()
+    
+    if auto_quality:
+        while (max(grangex, grangey) > 3.25 or max(gradientx.std(), gradienty.std()) > 0.1) and q > 1:
+            q -= 1
+            print("Artifacts detected, lowering to quality "+ str(q) +" and trying again.")
+            displacement = find_map(aim1, aim2, q)
+            magnitude = np.sqrt(displacement[:,:,0]**2+displacement[:,:,1]**2)
+            gradienty = np.gradient(magnitude,axis=0)
+            gradientx = np.gradient(magnitude,axis=1)
+            grangex = gradientx.max() - gradientx.min()
+            grangey = gradienty.max() - gradienty.min()
+    if max(grangex, grangey) > 3.25 or max(gradientx.std(), gradienty.std()) > 0.1:
+        print("Artifacts are likely present on "+'{:s}'.format(base)+". Name saved to Artifacts.txt for later inspection.")
+        with open(outfolder+'Output/Artifacts.txt', 'a+') as f:
+            f.write('{:s}'.format(base)+'\n')
+            f.close()
+    grid_array = np.indices((Qh[q-1], Qw[q-1]),dtype='float').transpose(1,2,0)
     grid_array[:,:,[0,1]] = grid_array[:,:,[1,0]]
     dis = grid_array-displacement
     map = cv2.resize(dis, (int(scale*aim2x),int(scale*aim2y)),cv2.INTER_CUBIC)
-    map[:,:,0] = map[:,:,0]*aim1x/Qw
-    map[:,:,1] = map[:,:,1]*aim1y/Qh
+    map[:,:,0] = map[:,:,0]*aim1x/Qw[q-1]
+    map[:,:,1] = map[:,:,1]*aim1y/Qh[q-1]
     warpr = map_coordinates(aim1[:,:,0],(map[:,:,1],map[:,:,0]), order=3, mode='nearest')
     warpb = map_coordinates(aim1[:,:,1],(map[:,:,1],map[:,:,0]), order=3, mode='nearest')
     warpg = map_coordinates(aim1[:,:,2],(map[:,:,1],map[:,:,0]), order=3, mode='nearest')
     warp = cv2.merge((warpr,warpb,warpg))
     white = np.ones_like(aim1[:,:,0])
     mapw = cv2.resize(dis, (aim2x,aim2y),cv2.INTER_CUBIC)
-    mapw[:,:,0] = mapw[:,:,0]*aim1x/Qw
-    mapw[:,:,1] = mapw[:,:,1]*aim1y/Qh
+    mapw[:,:,0] = mapw[:,:,0]*aim1x/Qw[q-1]
+    mapw[:,:,1] = mapw[:,:,1]*aim1y/Qh[q-1]
     warpw = map_coordinates(white,(mapw[:,:,1],mapw[:,:,0]), order=3, mode='constant')
     top_left, bottom_right = find_rectangle(warpw)
     if mode == 1:
@@ -674,8 +705,8 @@ def Do_Work(hrimg, lrimg, base = None):
     elif color_correction == 1:
         lowres = PT.pdf_transfer(img_arr_in = lowres, img_arr_ref = highres, regrain = True)
     
-    cv2.imwrite('Output/HR/{:s}.png'.format(base), highres)
-    cv2.imwrite('Output/LR/{:s}.png'.format(base), lowres)
+    cv2.imwrite(outfolder+'Output/HR/{:s}.png'.format(base), highres)
+    cv2.imwrite(outfolder+'Output/LR/{:s}.png'.format(base), lowres)
     
 
     if Overlay:
@@ -684,7 +715,7 @@ def Do_Work(hrimg, lrimg, base = None):
         dim_overlay = (whr, hhr)
         scalelr = cv2.resize(lowres,dim_overlay, interpolation=cv2.INTER_CUBIC)
         overlay = cv2.addWeighted(highres,0.5,scalelr,0.5,0)
-        cv2.imwrite('Output/Overlay/{:s}.png'.format(base), overlay)
+        cv2.imwrite(outfolder+'Output/Overlay/{:s}.png'.format(base), overlay)
     
     if score:
         try:
@@ -692,20 +723,20 @@ def Do_Work(hrimg, lrimg, base = None):
         except:
             ascore = 0
         print('{:s}'.format(base)+' score: '+str(ascore))
-        with open('Output/AlignmentScore.txt', 'a+') as f:
+        with open(outfolder+'Output/AlignmentScore.txt', 'a+') as f:
             f.write('{:s}'.format(base)+'     '+ str(ascore) +'\n')
             f.close()
  
  
-if not os.path.exists('Output'):
-    os.mkdir('Output')
-if not os.path.exists('Output/LR'):
-    os.mkdir('Output/LR')
-if not os.path.exists('Output/HR'):
-    os.mkdir('Output/HR')
+if not os.path.exists(outfolder+'Output'):
+    os.mkdir(outfolder+'Output')
+if not os.path.exists(outfolder+'Output/LR'):
+    os.mkdir(outfolder+'Output/LR')
+if not os.path.exists(outfolder+'Output/HR'):
+    os.mkdir(outfolder+'Output/HR')
 if Overlay:
-    if not os.path.exists('Output/Overlay'):
-        os.mkdir('Output/Overlay')
+    if not os.path.exists(outfolder+'Output/Overlay'):
+        os.mkdir(outfolder+'Output/Overlay')
 
 ogscale = scale
 if mode == 1:
@@ -734,7 +765,7 @@ elif threads > 1:
             try:
                 Do_Work(hrim,lrim,base)
             except:
-                with open('Output/Failed.txt', 'a+') as f:
+                with open(outfolder+'Output/Failed.txt', 'a+') as f:
                     f.write('{:s}'.format(base)+extention+'\n')
                     f.close()
                 print('Match failed for ','{:s}'.format(base)+extention)
@@ -746,10 +777,10 @@ elif threads > 1:
         except KeyboardInterrupt:
             for future in futures:
                 future.cancel()
-            if os.path.exists('Output/Failed.txt'):
-                sort('Output/Failed.txt')
+            if os.path.exists(outfolder+'Output/Failed.txt'):
+                sort(outfolder+'Output/Failed.txt')
             if score:
-                sort('Output/AlignmentScore.txt')
+                sort(outfolder+'Output/AlignmentScore.txt')
 
 # Single threaded execution
 else:
@@ -767,15 +798,17 @@ else:
         except KeyboardInterrupt:
             break
         except:
-            with open('Output/Failed.txt', 'a+') as f:
+            with open(outfolder+'Output/Failed.txt', 'a+') as f:
                 f.write('{:s}'.format(base)+extention+'\n')
                 f.close()
             print('Match failed for ','{:s}'.format(base)+extention)
             
-if os.path.exists('Output/Failed.txt'):
-    sort('Output/Failed.txt')
+if os.path.exists(outfolder+'Output/Failed.txt'):
+    sort(outfolder+'Output/Failed.txt')
+if os.path.exists(outfolder+'Output/Artifacts.txt'):
+    sort(outfolder+'Output/Artifacts.txt')
 if score:
-    sort('Output/AlignmentScore.txt')
+    sort(outfolder+'Output/AlignmentScore.txt')
 
 def __main__():
     pass

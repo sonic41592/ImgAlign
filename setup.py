@@ -5,7 +5,7 @@ long_description = (direct / "README.md").read_text()
 
 setup(
     name='ImgAlign',
-    version='4.0',
+    version='4.1',
     long_description=long_description,
     long_description_content_type='text/markdown',
     packages=find_packages(),
