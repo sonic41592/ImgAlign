@@ -5,19 +5,20 @@ This tool is useful for auto aligning, cropping, and scaling HR and LR images fo
 
 
 # Quick Start
-For best performance, it is highly recommended that you install torch with cuda from https://pytorch.org/get-started/locally/
+For optimal performance, it is highly recommended that you install torch with cuda from https://pytorch.org/get-started/locally/
 ImgAlign is installed through python pip using the command: 
-pip install ImgAlign
 
-Accepts file inputs or directories for the HR and LR inputs. Open a command prompt window in a folder containing folders named HR and LR which contain the HR and LR images with matching names, or use -l and -g to specify folders and images.  Use the options -s (or --scale) to set the scaling multiple.  Output images are saved in Output folder and are scaled properly. I recommend starting with a command like "ImgAlign -s 2 -ai -j" to use optical flow to improve an affine alignment.
+`pip install ImgAlign`
+
+ImgAlign accepts file inputs or directories for the HR and LR inputs. To begin, open a command prompt window in a folder with subdirectoris named `HR` and `LR`. These should contain the HR and LR images you intend to align with matching names. Alternatively you can use -l and -g to specify direct paths to folders and images. Use the option `-s` (or `--scale`) to set the scaling multiple. Output images are saved in the newly made Output folder and are already scaled. I recommend starting with a command like "ImgAlign -s 2 -ai -j" to use optical flow to improve an affine alignment.
 
 Example:
 
-ImgAlign -s 2 -j -ai
+`ImgAlign -s 2 -j -ai`
 
 Example 2 with some settings enabled with default vaules:
 
-ImgAlign -s 2 -m 0 -g HR\ -l LR\ -c -i -1 -j -ai
+`ImgAlign -s 2 -m 0 -g HR\ -l LR\ -c -i -1 -j -ai`
 
 
 # Options:
