@@ -3,6 +3,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 import numpy as np
+import cupy as cp
 import os
 import sys
 import cv2
@@ -12,8 +13,9 @@ import torch
 import argparse
 from argparse import Namespace
 import math
+import random
 from itertools import groupby
-from scipy.ndimage import map_coordinates
+from cupyx.scipy.ndimage import map_coordinates, median_filter
 from .raft.raft import RAFT
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from sklearn.linear_model import RANSACRegressor
@@ -46,6 +48,7 @@ parser.add_argument("-f", "--full", action='store_true', default=False, help="Di
 parser.add_argument("-w", "--warp", action='store_true', default=False, help="Disabled by default. Match images using Thin Plate Splines, allowing full image warping. Because of the nature of TPS warping, this option requires that manual or semiautomatic points are used.")
 parser.add_argument("-ai", "--ai", action='store_true', default=False, help="Disabled by default. This option allows use of RAFT optical flow to align images. This can be used in conjunction with any of the aligning methods, affine, rotation, homography, or warping to improve alignment, or by itself. This method can occasionally cause artifacts in the output depending on the type of low resolution images being used, this can usually be fixed by lowering the quality parameter to 2 or 1.")
 parser.add_argument("-q", "--quality", default=3, help="Integer 1-3, Default 3. Quality of the AI alignment. This also functions as a maximum quality used when auto quality is enabled. Higher numbers are more aggressive and ususally improves alignment, but can cause AI artifacts on some sources. Lower numbers might impact alignment, but causes fewer AI artifacts, uses less VRAM, runs a little faster, and is more suitable for multithreading.")
+parser.add_argument("-k", "--kernel", default=21, help="Odd Integer 1-Size of output. The kernel size of a Median Blur filter on the AI alignment mapping to reduce artifacts. Higher numbers help reduce artifacts but can impact alignment and speed")
 parser.add_argument("-aq", "--autoquality", action='store_false', default=True, help="Enabled by default. Using this option disables the auto quality step down to try to fix AI artifacts.")
 parser.add_argument("-u", "--manual", action='store_true', default=False, help="Disabled by default. Manual mode. If enabled, this opens windows for working pairs of images to be aligned. Double click pairs of matching points on each image in sequence, and close the windows when finished.")
 parser.add_argument("-a", "--semiauto", action='store_true', default=False, help="Disabled by default. Semiautomatic mode. Automatically finds matching points, but loads them into a viewer window to manually delete or add more.")
@@ -53,6 +56,7 @@ parser.add_argument("-O", "--overlay", action='store_false', default=True, help=
 parser.add_argument("-i", "--color", default=0, help="Default disabled. After alignment, option -1 changes the colors of the HR image to match those of the LR image. Option 1 changes the color of the LR images to match the HR images. This can occasionally cause miscolored regions in the altered images, so examine the results carefully.")
 parser.add_argument("-n", "--threads", default=1, help="Default 1. Number of threads to use for automatic matching. Large images require a lot of RAM, so start small to test first.")
 parser.add_argument("-e", "--score", action='store_true', default=False, help="Disabled by default. Calculate an alignment score for each processed pair of images. These scores should be taken with a grain of salt, they are mainly to give a general idea of how well aligned things are.")
+parser.add_argument("-v", "--video", action='store_true', default=False, help="Disabled by default. Video mode: Calculates transformations for all image pairs, takes the outlier-excluded average, and applies that average transform to all images. Compatible with RAFT alignment.")
 
 args = vars(parser.parse_args())
 
@@ -75,9 +79,10 @@ warp = args["warp"]
 color_correction = int(args["color"])
 optical_flow = args["ai"]
 quality = int(args["quality"])
+aikern = int(args["kernel"])
 auto_quality = args["autoquality"]
+video_mode = args["video"]
 
-# Changing conflicting or priority setting
 if optical_flow:
     Qh = (544, 720, 1080)
     Qw = (720, 960, 1440)
@@ -94,19 +99,26 @@ if optical_flow:
     RAFT_THINGS_FILE = os.path.join(RAFT_MODULE_DIR, 'raft', 'raft-things.pth')
     args = Namespace(small=False, alternate_corr=False, mixed_precision=False, model=RAFT_THINGS_FILE)
     model = torch.nn.DataParallel(RAFT(args))
-    model.load_state_dict(torch.load(args.model,map_location=torch.device(DEVICE)))
+    model.load_state_dict(torch.load(args.model,map_location=torch.device(DEVICE), weights_only=True))
     model = model.module
     model.to(DEVICE)
     model.eval()
 
+if not affi and rotate and Homography and warp and optical_flow:
+    affi = True
+
 if warp:
     Homography = False
     rotate = False
+    affi = False
     if not Manual:
         semiauto = True
-    
-if Manual or semiauto:
-    affi = True
+
+if video_mode:
+    Manual = False
+    semiauto = False
+    warp = False
+    autocrop = False
 
 if Manual or semiauto:
     threads = 1
@@ -401,13 +413,13 @@ def manual_points(img1, img2, pointsA = None, pointsB = None):
 
 # Automatic point finding with SIFT
 def auto_points(im1, im2):
-
+    
     im1y, im1x, _ = im1.shape
     im2y, im2x, _ = im2.shape
-
+    
     im1 = cv2.resize(im1,(max(im1x,im2x),max(im1y,im2y)),interpolation=cv2.INTER_CUBIC)
     im2 = cv2.resize(im2,(max(im1x,im2x),max(im1y,im2y)),interpolation=cv2.INTER_CUBIC)
-
+    
     im1Gray = cv2.cvtColor(im1, cv2.COLOR_BGR2GRAY)
     im2Gray = cv2.cvtColor(im2, cv2.COLOR_BGR2GRAY)
     
@@ -429,7 +441,7 @@ def auto_points(im1, im2):
     
     points1[:,0,0], points1[:,0,1] = points1[:,0,0]*im1x/max(im1x,im2x), points1[:,0,1]*im1y/max(im1y,im2y)
     points2[:,0,0], points2[:,0,1] = points2[:,0,0]*im2x/max(im1x,im2x), points2[:,0,1]*im2y/max(im1y,im2y)
-
+    
     points1, points2 = ransac(points1, points2)
     _, ind1 = np.unique(points1, axis=0, return_index=True)
     _, ind2 = np.unique(points2, axis=0, return_index=True)
@@ -505,43 +517,24 @@ def find_map(aim1, aim2, qual):
     with torch.no_grad():
         image1 = load_image(aim1g)
         image2 = load_image(aim2g)
-        flow_low, flow_up = model(image1, image2, iters=20, test_mode=True)
+        flow_low, flow_up = model(image1, image2, iters=40, test_mode=True)
         displacement = flow_up[0].permute(1,2,0).detach().cpu().numpy()
         return displacement
 
-# Improves alignment using RAFT
-def AI_Align_Process(aim1, aim2, pre = 0):
-    # Precrops the images to overlapping regions if they aren't prealigned
-    if pre == 0:
-        aim1y, aim1x, _ = aim1.shape
-        aim2y, aim2x, _ = aim2.shape
-        prewhite = np.ones_like(aim1[:,:,0])
-        taim1 = cv2.resize(aim1,(min(aim1x,aim2x),min(aim1y,aim2y)),interpolation=cv2.INTER_CUBIC)
-        taim2 = cv2.resize(aim2,(min(aim1x,aim2x),min(aim1y,aim2y)),interpolation=cv2.INTER_CUBIC)
-        points1, points2 = auto_points(taim1, taim2)
-        points1[:,0,0], points1[:,0,1] = points1[:,0,0]*aim1x/min(aim1x,aim2x), points1[:,0,1]*aim1y/min(aim1y,aim2y)
-        points2[:,0,0], points2[:,0,1] = points2[:,0,0]*aim2x/min(aim1x,aim2x), points2[:,0,1]*aim2y/min(aim1y,aim2y)
-        h, _ = cv2.findHomography(points1, points2, cv2.RANSAC)
-        prewarp = cv2.warpPerspective(prewhite,h,(aim2x,aim2y),flags=0)
-        pntsA, pntsD = find_rectangle(prewarp)
-        ih = np.linalg.inv(h)
-        A = np.matmul(ih,np.array([pntsA[1], pntsA[0], 1]).T)
-        B = np.matmul(ih,np.array([pntsA[1], pntsD[0], 1]).T)
-        C = np.matmul(ih,np.array([pntsD[1], pntsA[0], 1]).T)
-        D = np.matmul(ih,np.array([pntsD[1], pntsD[0], 1]).T)
-        top = int(np.clip(min(A[1], B[1], C[1], D[1]),0,aim1y))
-        bottom = int(np.clip(max(A[1], B[1], C[1], D[1]),0,aim1y))
-        left = int(np.clip(min(A[0], B[0], C[0], D[0]),0,aim1x))
-        right = int(np.clip(max(A[0], B[0], C[0], D[0]),0,aim1x))
-        aim1 = aim1[top:bottom+1,left:right+1]
-        aim2 = aim2[pntsA[0]:pntsD[0]+1,pntsA[1]:pntsD[1]+1]
-    # RAFT mapping
+# Compute RAFT displacement map only
+def compute_displacement_map(aim1, aim2):
     aim1y, aim1x, _ = aim1.shape
     aim2y, aim2x, _ = aim2.shape
     q = quality
     if mode == 1:
         aim2 = aim2[:aim2y-int((aim2y%ogscale)),:aim2x-int((aim2x%ogscale)),:]
-    displacement = find_map(aim1, aim2, q)
+        displacement = find_map(aim1, aim2, q)
+    else:
+        displacement = -find_map(aim2, aim1, q)
+    
+    if aikern > 1:
+        displacement[:,:,0] = cp.asnumpy(median_filter(cp.array(displacement[:,:,0]), size=(aikern,aikern)))
+        displacement[:,:,1] = cp.asnumpy(median_filter(cp.array(displacement[:,:,1]), size=(aikern,aikern)))
     magnitude = np.sqrt(displacement[:,:,0]**2+displacement[:,:,1]**2)
     gradienty = np.gradient(magnitude,axis=0)
     gradientx = np.gradient(magnitude,axis=1)
@@ -552,32 +545,95 @@ def AI_Align_Process(aim1, aim2, pre = 0):
         while (max(grangex, grangey) > 3.25 or max(gradientx.std(), gradienty.std()) > 0.1) and q > 1:
             q -= 1
             print("Artifacts detected, lowering to quality "+ str(q) +" and trying again.")
-            displacement = find_map(aim1, aim2, q)
+            if mode == 1:
+                displacement = find_map(aim1, aim2, q)
+            else:
+                displacement = -find_map(aim2, aim1, q)
+            if aikern > 1:
+                displacement[:,:,0] = cp.asnumpy(median_filter(cp.array(displacement[:,:,0]), size=(aikern,aikern)))
+                displacement[:,:,1] = cp.asnumpy(median_filter(cp.array(displacement[:,:,1]), size=(aikern,aikern)))
             magnitude = np.sqrt(displacement[:,:,0]**2+displacement[:,:,1]**2)
             gradienty = np.gradient(magnitude,axis=0)
             gradientx = np.gradient(magnitude,axis=1)
             grangex = gradientx.max() - gradientx.min()
             grangey = gradienty.max() - gradienty.min()
-    if max(grangex, grangey) > 3.25 or max(gradientx.std(), gradienty.std()) > 0.1:
-        print("Artifacts are likely present on "+'{:s}'.format(base)+". Name saved to Artifacts.txt for later inspection.")
-        with open(outfolder+'Output/Artifacts.txt', 'a+') as f:
-            f.write('{:s}'.format(base)+'\n')
-            f.close()
+    
+    return displacement, q
+
+# Improves alignment using RAFT
+def AI_Align_Process(aim1, aim2, base=None):
+    # RAFT mapping
+    aim1y, aim1x, _ = aim1.shape
+    aim2y, aim2x, _ = aim2.shape
+    
+    displacement, q = compute_displacement_map(aim1, aim2)
+    magnitude = np.sqrt(displacement[:,:,0]**2+displacement[:,:,1]**2)
+    gradienty = np.gradient(magnitude,axis=0)
+    gradientx = np.gradient(magnitude,axis=1)
+    grangex = gradientx.max() - gradientx.min()
+    grangey = gradienty.max() - gradienty.min()
+    if max(gradientx.max() - gradientx.min(), gradienty.max() - gradienty.min()) > 3.25 or max(gradientx.std(), gradienty.std()) > 0.1:
+        if base:
+            print("Artifacts are likely present on "+'{:s}'.format(base)+". Name saved to Artifacts.txt for later inspection.")
+            with open(outfolder+'Output/Artifacts.txt', 'a+') as f:
+                f.write('{:s}'.format(base)+'\n')
+                f.close()
+    
     grid_array = np.indices((Qh[q-1], Qw[q-1]),dtype='float').transpose(1,2,0)
     grid_array[:,:,[0,1]] = grid_array[:,:,[1,0]]
     dis = grid_array-displacement
     map = cv2.resize(dis, (int(scale*aim2x),int(scale*aim2y)),cv2.INTER_CUBIC)
     map[:,:,0] = map[:,:,0]*aim1x/Qw[q-1]
     map[:,:,1] = map[:,:,1]*aim1y/Qh[q-1]
-    warpr = map_coordinates(aim1[:,:,0],(map[:,:,1],map[:,:,0]), order=3, mode='nearest')
-    warpb = map_coordinates(aim1[:,:,1],(map[:,:,1],map[:,:,0]), order=3, mode='nearest')
-    warpg = map_coordinates(aim1[:,:,2],(map[:,:,1],map[:,:,0]), order=3, mode='nearest')
+    aim1cu = cp.array(aim1)
+    warpr = cp.asnumpy(map_coordinates(aim1cu[:,:,0],cp.array((map[:,:,1],map[:,:,0])), order=3, mode='nearest'))
+    warpb = cp.asnumpy(map_coordinates(aim1cu[:,:,1],cp.array((map[:,:,1],map[:,:,0])), order=3, mode='nearest'))
+    warpg = cp.asnumpy(map_coordinates(aim1cu[:,:,2],cp.array((map[:,:,1],map[:,:,0])), order=3, mode='nearest'))
     warp = cv2.merge((warpr,warpb,warpg))
     white = np.ones_like(aim1[:,:,0])
     mapw = cv2.resize(dis, (aim2x,aim2y),cv2.INTER_CUBIC)
     mapw[:,:,0] = mapw[:,:,0]*aim1x/Qw[q-1]
     mapw[:,:,1] = mapw[:,:,1]*aim1y/Qh[q-1]
-    warpw = map_coordinates(white,(mapw[:,:,1],mapw[:,:,0]), order=3, mode='constant')
+    warpw = cp.asnumpy(map_coordinates(cp.array(white),cp.array((mapw[:,:,1],mapw[:,:,0])), order=3, mode='constant'))
+    top_left, bottom_right = find_rectangle(warpw)
+    if mode == 1:
+        top_left[0] = top_left[0] + top_left[0] % ogscale
+        top_left[1] = top_left[1] + top_left[1] % ogscale
+        bottom_right[0] = bottom_right[0] - (bottom_right[0]+1) % ogscale
+        bottom_right[1] = bottom_right[1] - (bottom_right[1]+1) % ogscale
+    warp = warp[int(scale*top_left[0]):int(scale*(bottom_right[0]+1)),int(scale*top_left[1]):int(scale*(bottom_right[1]+1))]
+    aim2 = aim2[top_left[0]:(bottom_right[0]+1),top_left[1]:(bottom_right[1]+1)]
+    return warp, aim2
+
+# Apply RAFT displacement map to image
+def apply_displacement_map(aim1, aim2, displacement):
+    aim1y, aim1x, _ = aim1.shape
+    aim2y, aim2x, _ = aim2.shape
+    q = quality
+    
+    # Resize displacement to match quality level used
+    target_shape = (Qh[q-1], Qw[q-1])
+    if displacement.shape[0] != target_shape[0] or displacement.shape[1] != target_shape[1]:
+        displacement_resized = cv2.resize(displacement, (target_shape[1], target_shape[0]), cv2.INTER_CUBIC)
+    else:
+        displacement_resized = displacement
+    
+    grid_array = np.indices((Qh[q-1], Qw[q-1]),dtype='float').transpose(1,2,0)
+    grid_array[:,:,[0,1]] = grid_array[:,:,[1,0]]
+    dis = grid_array-displacement_resized
+    map = cv2.resize(dis, (int(scale*aim2x),int(scale*aim2y)),cv2.INTER_CUBIC)
+    map[:,:,0] = map[:,:,0]*aim1x/Qw[q-1]
+    map[:,:,1] = map[:,:,1]*aim1y/Qh[q-1]
+    aim1cu = cp.array(aim1)
+    warpr = cp.asnumpy(map_coordinates(aim1cu[:,:,0],cp.array((map[:,:,1],map[:,:,0])), order=3, mode='nearest'))
+    warpb = cp.asnumpy(map_coordinates(aim1cu[:,:,1],cp.array((map[:,:,1],map[:,:,0])), order=3, mode='nearest'))
+    warpg = cp.asnumpy(map_coordinates(aim1cu[:,:,2],cp.array((map[:,:,1],map[:,:,0])), order=3, mode='nearest'))
+    warp = cv2.merge((warpr,warpb,warpg))
+    white = np.ones_like(aim1[:,:,0])
+    mapw = cv2.resize(dis, (aim2x,aim2y),cv2.INTER_CUBIC)
+    mapw[:,:,0] = mapw[:,:,0]*aim1x/Qw[q-1]
+    mapw[:,:,1] = mapw[:,:,1]*aim1y/Qh[q-1]
+    warpw = cp.asnumpy(map_coordinates(cp.array(white),cp.array((mapw[:,:,1],mapw[:,:,0])), order=3, mode='constant'))
     top_left, bottom_right = find_rectangle(warpw)
     if mode == 1:
         top_left[0] = top_left[0] + top_left[0] % ogscale
@@ -596,11 +652,11 @@ def Align_Process(im1, im2):
     white1 = np.ones_like(im1[:,:,0])
     
     if Manual:
-        points1, points2 = manual_points(im1, im2)
+        points1, points2 = manual_points(im1, im2, homography=Homography, warp = warp, rotate = rotate)
     else:
         points1, points2 = auto_points(im1, im2)
         if semiauto:
-            points1, points2 = manual_points(im1, im2, points1, points2)
+            points1, points2 = manual_points(im1, im2, points1, points2, homography=Homography, warp = warp, rotate = rotate)
     
     # Find transform based on points
     if Homography:
@@ -622,12 +678,12 @@ def Align_Process(im1, im2):
             h[:,:2] = np.array([[sx,0],[0,sy]])
             
         warp1 = cv2.warpAffine(white1,h,(im2x,im2y),flags=0)
-        
-    # Get usable overlapping region
-    top_left, bottom_right = find_rectangle(warp1)
     
     if not warp:
         newh = smat @ h
+    
+    # Get usable overlapping region
+    top_left, bottom_right = find_rectangle(warp1)
     
     # Ensure integer multiple scale down for mode 1
     if mode == 1:
@@ -649,7 +705,69 @@ def Align_Process(im1, im2):
     im2 = im2[top_left[0]:(bottom_right[0]+1),top_left[1]:(bottom_right[1]+1)]
     
     if optical_flow:
-        im1, im2 = AI_Align_Process(im1, im2, pre = 1)
+        im1, im2 = AI_Align_Process(im1, im2)
+    
+    return im1, im2
+
+# Compute transformation matrix only (for video mode)
+def compute_transform_only(im1, im2):
+    points1, points2 = auto_points(im1, im2)
+    
+    if Homography:
+        h, _ = cv2.findHomography(points1, points2, cv2.RANSAC)
+        return h, 'homography'
+    else:
+        h, _ = cv2.estimateAffine2D(points1, points2, cv2.RANSAC)
+        if not rotate:
+            sx = math.sqrt(h[0,0]**2+h[1,0]**2)
+            sy = math.sqrt(h[0,1]**2+h[1,1]**2)
+            h[:,:2] = np.array([[sx,0],[0,sy]])
+        return h, 'affine'
+
+# Apply pre-computed transformation to image
+def apply_transform(im1, im2, transform, transform_type):
+    im1y, im1x, _ = im1.shape
+    im2y, im2x, _ = im2.shape
+    white1 = np.ones_like(im1[:,:,0])
+    
+    if transform_type == 'homography':
+        smat = np.array([[scale,0,0],[0,scale,0],[0,0,1]])
+        h = transform
+        warp1 = cv2.warpPerspective(white1,h,(im2x,im2y),flags=0)
+        newh = smat @ h
+    elif transform_type == 'warp':
+        points1, points2 = transform
+        white1 = np.pad(white1,[(0,max(0,im2y-im1y)),(0,max(0,im2x-im1x))])
+        warp1 = WarpImage_TPS(points1, points2, white1, 0)
+        warp1 = warp1[0:im2y,0:im2x]
+    else:  # affine
+        smat = np.array([[scale,0],[0,scale]])
+        h = transform
+        warp1 = cv2.warpAffine(white1,h,(im2x,im2y),flags=0)
+        newh = smat @ h
+    
+    # Get usable overlapping region
+    top_left, bottom_right = find_rectangle(warp1)
+    
+    # Ensure integer multiple scale down for mode 1
+    if mode == 1:
+        bottom_right[0] = bottom_right[0] - (bottom_right[0] - top_left[0] + 1) % (1/scale)
+        bottom_right[1] = bottom_right[1] - (bottom_right[1] - top_left[1] + 1) % (1/scale)
+    
+    # Transform image 1
+    if transform_type == 'homography':
+        im1 = cv2.warpPerspective(im1,newh,(int(scale*(bottom_right[1]+1)),int(scale*(bottom_right[0]+1))),flags=cv2.INTER_CUBIC)
+    elif transform_type == 'warp':
+        points1, points2 = transform
+        im1 = np.pad(im1,[(0,int(np.around(max(0,scale*im2y-im1y)))),(0,int(np.around(max(0,scale*im2x-im1x)))),(0,0)])
+        im1 = WarpImage_TPS(points1, scale*points2, im1, 1)
+        im1 = im1[:int(scale*(bottom_right[0]+1)),:int(scale*(bottom_right[1]+1))]
+    else:  # affine
+        im1 = cv2.warpAffine(im1,newh,(int(scale*(bottom_right[1]+1)),int(scale*(bottom_right[0]+1))),flags=cv2.INTER_CUBIC)
+    
+    # Crop images
+    im1 = im1[int(scale*top_left[0]):,int(scale*top_left[1]):]
+    im2 = im2[top_left[0]:(bottom_right[0]+1),top_left[1]:(bottom_right[1]+1)]
     
     return im1, im2
 
@@ -672,9 +790,95 @@ def sort(file):
     with open(file, "w") as f:
      f.writelines(sorted_lines)
 
+def find_outlier_index(vec):
+    Q1 = np.percentile(vec, 25, method = 'midpoint') 
+    Q3 = np.percentile(vec, 75, method = 'midpoint') 
+    IQR = Q3-Q1
+    upper = Q3 + 1.5 * IQR
+    lower = Q1 - 1.5 * IQR
+    q_outliers = []
+    for i in range(len(vec)):
+        if vec[i] > upper or vec[i] < lower:
+            q_outliers.append(i)
+    return q_outliers
 
+# Average transformations excluding outliers
+def average_transforms(transforms, transform_type):
+    # Convert transforms to arrays
+    transform_arrays = []
+    for t in transforms:
+        if transform_type == 'homography':
+            transform_arrays.append(t.flatten())
+        else:  # affine
+            transform_arrays.append(t.flatten())
+    
+    transform_arrays = np.array(transform_arrays)
+    
+    # Find outliers for each parameter
+    all_outliers = set()
+    for i in range(transform_arrays.shape[1]):
+        outliers = find_outlier_index(transform_arrays[:, i])
+        all_outliers.update(outliers)
+    
+    # Remove outliers
+    valid_indices = [i for i in range(len(transforms)) if i not in all_outliers]
+    if len(valid_indices) == 0:
+        print("Warning: All transforms marked as outliers. Using all transforms.")
+        valid_indices = list(range(len(transforms)))
+    
+    valid_transforms = transform_arrays[valid_indices]
+    avg_transform = np.mean(valid_transforms, axis=0)
+    
+    if transform_type == 'homography':
+        return avg_transform.reshape(3, 3)
+    else:  # affine
+        return avg_transform.reshape(2, 3)
 
-def Do_Work(hrimg, lrimg, base = None):
+def vectorized_find_outliers(data, threshold=1.5):
+    """data shape: (n_samples, max_h, max_w)"""
+    q1 = np.percentile(data, 25, axis=0)
+    q3 = np.percentile(data, 75, axis=0)
+    iqr = q3 - q1
+    lower = q1 - threshold * iqr
+    upper = q3 + threshold * iqr
+    return (data < lower) | (data > upper)
+
+# Average displacement maps excluding outliers
+def average_displacement_maps(displacement_maps):
+    # Find the maximum dimensions
+    max_h = max(d.shape[0] for d in displacement_maps)
+    max_w = max(d.shape[1] for d in displacement_maps)
+    
+    # Resize all displacement maps to the maximum dimensions
+    resized_maps = []
+    for disp in displacement_maps:
+        if disp.shape[0] != max_h or disp.shape[1] != max_w:
+            disp[:,:,0] = disp[:,:,0]*(max_w/disp.shape[1])
+            disp[:,:,1] = disp[:,:,1]*(max_h/disp.shape[0])
+            resized = cv2.resize(disp, (max_w, max_h), cv2.INTER_CUBIC)
+        else:
+            resized = disp.copy()
+        resized_maps.append(resized)
+    
+    displacement_array = np.array(resized_maps)
+    
+    # Find outliers for each pixel's x and y displacement
+    avg_displacement = np.zeros((max_h, max_w, 2))
+    
+    # Process all pixels at once
+    for dim in range(2):  # 0=x, 1=y
+        values = displacement_array[:, :, :, dim]  # shape: (n_frames, max_h, max_w)
+        
+        # Find outliers for all pixels simultaneously
+        outlier_masks = vectorized_find_outliers(values)  # Returns boolean mask
+        
+        # Compute mean excluding outliers
+        masked_values = np.ma.masked_array(values, mask=outlier_masks)
+        avg_displacement[:, :, dim] = masked_values.mean(axis=0)
+    
+    return avg_displacement
+
+def Do_Work(hrimg, lrimg, base = None, avg_transform = None, avg_displacement = None):
 
     highres = cv2.imread(hrimg, cv2.IMREAD_COLOR)
     lowres = cv2.imread(lrimg, cv2.IMREAD_COLOR)
@@ -683,12 +887,27 @@ def Do_Work(hrimg, lrimg, base = None):
         highres = AutoCrop(highres)
         lowres = AutoCrop(lowres)
     
-    if optical_flow and not (affi or rotate or Homography or warp):
+    if video_mode and avg_transform is not None:
+        # Apply averaged transform
+        transform, transform_type = avg_transform
         if mode == 0:
-            highres, lowres = AI_Align_Process(highres, lowres)
+            highres, lowres = apply_transform(highres, lowres, transform, transform_type)
+        else:
+            lowres, highres = apply_transform(lowres, highres, transform, transform_type)
+        
+        # Apply averaged RAFT displacement if available
+        if optical_flow and avg_displacement is not None:
+            if mode == 0:
+                highres, lowres = apply_displacement_map(highres, lowres, avg_displacement)
+            else:
+                lowres, highres = apply_displacement_map(lowres, highres, avg_displacement)
+    
+    elif optical_flow and not (affi or rotate or Homography):
+        if mode == 0:
+            highres, lowres = AI_Align_Process(highres, lowres, base)
     
         if mode == 1:
-            lowres, highres = AI_Align_Process(lowres, highres)
+            lowres, highres = AI_Align_Process(lowres, highres, base)
             
     else:
         if mode == 0:
@@ -726,8 +945,7 @@ def Do_Work(hrimg, lrimg, base = None):
         with open(outfolder+'Output/AlignmentScore.txt', 'a+') as f:
             f.write('{:s}'.format(base)+'     '+ str(ascore) +'\n')
             f.close()
- 
- 
+
 if not os.path.exists(outfolder+'Output'):
     os.mkdir(outfolder+'Output')
 if not os.path.exists(outfolder+'Output/LR'):
@@ -748,6 +966,101 @@ if os.path.isfile(HRfolder):
     hrim = HRfolder
     lrim = LRfolder
     Do_Work(hrim, lrim, base)
+
+# Video mode: Calculate average transformations
+elif video_mode:
+    if len(HRfolder) == 0:
+        HRfolder = 'HR'
+        LRfolder = 'LR/'
+    
+    print("Video mode: Computing transformations for all image pairs...")
+    
+    # Collect all image pairs
+    hr_paths = sorted(glob.glob(HRfolder+'/*'))
+    image_pairs = []
+    for path in hr_paths:
+        base = os.path.splitext(os.path.basename(path))[0]
+        extention = os.path.splitext(os.path.basename(path))[1]
+        lrim = LRfolder+'/'+base+extention
+        if os.path.exists(lrim):
+            image_pairs.append((path, lrim, base))
+    
+    # Compute transforms for all pairs
+    transforms = []
+    displacement_maps = []
+    transform_type = None
+    
+    for hrim, lrim, base in image_pairs:
+        print(f"Computing transform for {base}...")
+        try:
+            highres = cv2.imread(hrim, cv2.IMREAD_COLOR)
+            lowres = cv2.imread(lrim, cv2.IMREAD_COLOR)
+            # Compute standard transformation
+            if affi or rotate or Homography:
+                if mode == 0:
+                    transform, ttype = compute_transform_only(highres, lowres)
+                else:
+                    transform, ttype = compute_transform_only(lowres, highres)
+                transforms.append(transform)
+                if transform_type is None:
+                    transform_type = ttype
+        except Exception as e:
+            print(f"Failed to compute transform for {base}: {e}")
+    
+    # Average transforms (excluding outliers)
+    avg_transform = None
+    if len(transforms) > 0:
+        print(f"Averaging {len(transforms)} transformations...")
+        avg_transform_matrix = average_transforms(transforms, transform_type)
+        avg_transform = (avg_transform_matrix, transform_type)
+        print("Average transformation computed.")
+    
+    # If using optical flow, compute displacement maps with averaged transform applied
+    avg_displacement = None
+    if optical_flow:
+        print("Computing RAFT displacement maps...")
+        for hrim, lrim, base in image_pairs:
+            print(f"Computing RAFT for {base}...")
+            try:
+                highres = cv2.imread(hrim, cv2.IMREAD_COLOR)
+                lowres = cv2.imread(lrim, cv2.IMREAD_COLOR)
+                
+                # Apply averaged standard transform first if it exists
+                if avg_transform is not None and (affi or rotate or Homography):
+                    transform, ttype = avg_transform
+                    if mode == 0:
+                        highres, lowres = apply_transform(highres, lowres, transform, ttype)
+                    else:
+                        lowres, highres = apply_transform(lowres, highres, transform, ttype)
+                
+                # Compute RAFT displacement
+                if mode == 0:
+                    displacement, q = compute_displacement_map(highres, lowres)
+                else:
+                    displacement, q = compute_displacement_map(lowres, highres)
+                
+                displacement_maps.append(displacement)
+            except Exception as e:
+                print(f"Failed to compute RAFT for {base}: {e}")
+        
+        # Average displacement maps
+        if len(displacement_maps) > 0:
+            print(f"Averaging {len(displacement_maps)} displacement maps...")
+            avg_displacement = average_displacement_maps(displacement_maps)
+            print("Average displacement map computed.")
+    
+    # Now process all images with averaged transforms
+    print("Applying averaged transformations to all images...")
+    for hrim, lrim, base in image_pairs:
+        extention = os.path.splitext(os.path.basename(hrim))[1]
+        print('{:s}'.format(base)+extention)
+        try:
+            Do_Work(hrim, lrim, base, avg_transform, avg_displacement)
+        except Exception as e:
+            with open(outfolder+'Output/Failed.txt', 'a+') as f:
+                f.write('{:s}'.format(base)+extention+'\n')
+                f.close()
+            print('Match failed for ','{:s}'.format(base)+extention, str(e))
 
 elif threads > 1:
 
@@ -787,6 +1100,7 @@ else:
     if len(HRfolder) == 0:
         HRfolder = 'HR'
         LRfolder = 'LR/'
+    
     for path in glob.glob(HRfolder+'/*'):
         base = os.path.splitext(os.path.basename(path))[0]
         extention = os.path.splitext(os.path.basename(path))[1]

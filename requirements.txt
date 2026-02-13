@@ -2,7 +2,7 @@ mpl_interactions
 matplotlib
 numpy
 opencv-contrib-python
-scipy
+cupy
 scikit-learn
 python_color_transfer
 torch

@@ -18,13 +18,13 @@ Example:
 
 Example 2 with some settings enabled with default vaules:
 
-`ImgAlign -s 2 -m 0 -g HR\ -l LR\ -c -i -1 -j -ai`
+`ImgAlign -s 2 -m 0 -g HR\ -l LR\ -c -i -1 -j -ai -v`
 
 
 # Options:
 <pre>
 usage: ImgAlign.exe [-h] -s SCALE [-m MODE] [-l LR] [-g HR] [-o OUTPUT] [-c] [-t THRESHOLD] [-j] [-r] [-f] [-w] [-ai]
-                    [-q QUALITY] [-aq] [-u] [-a] [-O] [-i COLOR] [-n THREADS] [-e]
+                    [-q QUALITY] [-k KERNEL] [-aq] [-u] [-a] [-O] [-i COLOR] [-n THREADS] [-e] [-v]
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -68,6 +68,10 @@ optional arguments:
                         alignment, but can cause AI artifacts on some sources. Lower numbers might impact alignment,
                         but causes fewer AI artifacts, uses less VRAM, runs a little faster, and is more suitable for
                         multithreading.
+  -k KERNEL, --kernel KERNEL
+                        Odd Integer 1-Size of output. The kernel size of a Median Blur filter on the AI alignment
+                        mapping to reduce artifacts. Higher numbers help reduce artifacts but can impact alignment and
+                        speed
   -aq, --autoquality    Enabled by default. Using this option disables the auto quality step down to try to fix AI
                         artifacts.
   -u, --manual          Disabled by default. Manual mode. If enabled, this opens windows for working pairs of images
@@ -88,6 +92,9 @@ optional arguments:
   -e, --score           Disabled by default. Calculate an alignment score for each processed pair of images. These
                         scores should be taken with a grain of salt, they are mainly to give a general idea of how
                         well aligned things are.
+  -v, --video           Disabled by default. Video mode: Calculates transformations for all image pairs, takes the
+                        outlier-excluded average, and applies that average transform to all images. Compatible with
+                        RAFT alignment.
 
 Manual Keys:
 Double click left: Select point.
@@ -123,6 +130,10 @@ ImgAlign -s 2 -ai -r -q 1
 
 [2x with rotations and Raft quality 2](https://imgsli.com/MjQwNzM4)
 
+
+# Changes:
+Added new video mode, which computes the average transformation for the given folder and applies it to all frames. This helps reduce artifacts, but is susceptible to things like frame judder and gate weave.
+Improved Raft AI alignment/reduced artifacts
 
 # Starting Point/Credit
 
